@@ -1,8 +1,17 @@
 const GITHUB_PAT = import.meta.env.VITE_GITHUB_PAT;
 const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO;
-const GITHUB_PATH_CHANNELS = import.meta.env.VITE_GITHUB_PATH;
-const GITHUB_DIR = GITHUB_PATH_CHANNELS.substring(0, GITHUB_PATH_CHANNELS.lastIndexOf('/'));
-const GITHUB_PATH_VPN = `${GITHUB_DIR}/vpn_configs.json`;
+const GITHUB_PATH_CHANNELS = import.meta.env.VITE_GITHUB_PATH || '';
+
+const getVpnPath = (channelPath) => {
+    const lastSlashIndex = channelPath.lastIndexOf('/');
+    const dir = lastSlashIndex !== -1 ? channelPath.substring(0, lastSlashIndex) : '';
+    const vpnFile = 'vpn_configs.json';
+    const path = dir ? `${dir}/${vpnFile}` : vpnFile;
+    return path.startsWith('/') ? path.substring(1) : path;
+};
+
+const GITHUB_PATH_VPN = getVpnPath(GITHUB_PATH_CHANNELS);
+const GITHUB_PATH_CHANNELS_CLEAN = GITHUB_PATH_CHANNELS.startsWith('/') ? GITHUB_PATH_CHANNELS.substring(1) : GITHUB_PATH_CHANNELS;
 
 if (!GITHUB_PAT || !GITHUB_REPO || !GITHUB_PATH_CHANNELS) {
     console.error('Missing GitHub Configuration:', {
@@ -79,12 +88,12 @@ async function updateFile(path, data, sha, message) {
 
 export const githubService = {
     async fetchChannels() {
-        const result = await fetchFile(GITHUB_PATH_CHANNELS);
+        const result = await fetchFile(GITHUB_PATH_CHANNELS_CLEAN);
         return { channels: result.data, sha: result.sha };
     },
 
     async updateChannels(channels, sha) {
-        return await updateFile(GITHUB_PATH_CHANNELS, channels, sha, `Update channel list: ${new Date().toLocaleString()}`);
+        return await updateFile(GITHUB_PATH_CHANNELS_CLEAN, channels, sha, `Update channel list: ${new Date().toLocaleString()}`);
     },
 
     async fetchVpnConfigs() {
