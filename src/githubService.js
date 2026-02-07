@@ -1,76 +1,98 @@
 const GITHUB_PAT = import.meta.env.VITE_GITHUB_PAT;
 const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO;
-const GITHUB_PATH = import.meta.env.VITE_GITHUB_PATH;
+const GITHUB_PATH_CHANNELS = import.meta.env.VITE_GITHUB_PATH;
+const GITHUB_DIR = GITHUB_PATH_CHANNELS.substring(0, GITHUB_PATH_CHANNELS.lastIndexOf('/'));
+const GITHUB_PATH_VPN = `${GITHUB_DIR}/vpn_configs.json`;
 
-if (!GITHUB_PAT || !GITHUB_REPO || !GITHUB_PATH) {
+if (!GITHUB_PAT || !GITHUB_REPO || !GITHUB_PATH_CHANNELS) {
     console.error('Missing GitHub Configuration:', {
         hasPat: !!GITHUB_PAT,
         hasRepo: !!GITHUB_REPO,
-        hasPath: !!GITHUB_PATH
+        hasPath: !!GITHUB_PATH_CHANNELS
     });
 }
 
-const BASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_PATH}`;
+const getBaseUrl = (path) => `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
+
+async function fetchFile(path) {
+    const response = await fetch(getBaseUrl(path), {
+        headers: {
+            Authorization: `token ${GITHUB_PAT}`,
+            Accept: 'application/vnd.github.v3+json',
+        },
+    });
+
+    if (response.status === 404) {
+        return { data: [], sha: null };
+    }
+
+    if (!response.ok) {
+        throw new Error(`Failed to fetch ${path}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const binaryString = atob(data.content.replace(/\n/g, ''));
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const content = new TextDecoder().decode(bytes);
+
+    return {
+        data: JSON.parse(content),
+        sha: data.sha
+    };
+}
+
+async function updateFile(path, data, sha, message) {
+    const jsonString = JSON.stringify(data, null, 2);
+    const bytes = new TextEncoder().encode(jsonString);
+    let binaryString = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binaryString += String.fromCharCode(bytes[i]);
+    }
+    const content = btoa(binaryString);
+
+    const body = {
+        message: message || `Update ${path}: ${new Date().toLocaleString()}`,
+        content: content,
+    };
+    if (sha) body.sha = sha;
+
+    const response = await fetch(getBaseUrl(path), {
+        method: 'PUT',
+        headers: {
+            Authorization: `token ${GITHUB_PAT}`,
+            Accept: 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`Failed to update ${path}: ${errorData.message}`);
+    }
+
+    return await response.json();
+}
 
 export const githubService = {
     async fetchChannels() {
-        const response = await fetch(BASE_URL, {
-            headers: {
-                Authorization: `token ${GITHUB_PAT}`,
-                Accept: 'application/vnd.github.v3+json',
-            },
-        });
-
-        if (!response.ok) {
-            throw new Error(`Failed to fetch: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-
-        // Use TextDecoder for UTF-8 support
-        const binaryString = atob(data.content.replace(/\n/g, ''));
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        const content = new TextDecoder().decode(bytes);
-
-        return {
-            channels: JSON.parse(content),
-            sha: data.sha
-        };
+        const result = await fetchFile(GITHUB_PATH_CHANNELS);
+        return { channels: result.data, sha: result.sha };
     },
 
     async updateChannels(channels, sha) {
-        const jsonString = JSON.stringify(channels, null, 2);
+        return await updateFile(GITHUB_PATH_CHANNELS, channels, sha, `Update channel list: ${new Date().toLocaleString()}`);
+    },
 
-        // Use TextEncoder for UTF-8 support
-        const bytes = new TextEncoder().encode(jsonString);
-        let binaryString = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binaryString += String.fromCharCode(bytes[i]);
-        }
-        const content = btoa(binaryString);
+    async fetchVpnConfigs() {
+        const result = await fetchFile(GITHUB_PATH_VPN);
+        return { configs: result.data, sha: result.sha };
+    },
 
-        const response = await fetch(BASE_URL, {
-            method: 'PUT',
-            headers: {
-                Authorization: `token ${GITHUB_PAT}`,
-                Accept: 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                message: `Update channel list: ${new Date().toLocaleString()}`,
-                content: content,
-                sha: sha
-            }),
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(`Failed to update: ${errorData.message}`);
-        }
-
-        return await response.json();
+    async updateVpnConfigs(configs, sha) {
+        return await updateFile(GITHUB_PATH_VPN, configs, sha, `Update VPN configs: ${new Date().toLocaleString()}`);
     }
 };
