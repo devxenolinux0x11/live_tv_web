@@ -5,7 +5,7 @@ const GITHUB_PATH_CHANNELS = import.meta.env.VITE_GITHUB_PATH || '';
 const getVpnPath = (channelPath) => {
     const lastSlashIndex = channelPath.lastIndexOf('/');
     const dir = lastSlashIndex !== -1 ? channelPath.substring(0, lastSlashIndex) : '';
-    const vpnFile = 'vpn_configs.json';
+    const vpnFile = 'vpn_config.json';
     const path = dir ? `${dir}/${vpnFile}` : vpnFile;
     return path.startsWith('/') ? path.substring(1) : path;
 };

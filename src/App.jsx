@@ -46,8 +46,7 @@ function App() {
     Backupurl: ''
   })
   const [vpnFormData, setVpnFormData] = useState({
-    name: '',
-    config: ''
+    rawConfig: ''
   })
 
   useEffect(() => {
@@ -59,12 +58,12 @@ function App() {
     setError(null)
     try {
       const chResult = await githubService.fetchChannels()
-      setChannels(chResult.channels)
+      setChannels(Array.isArray(chResult.channels) ? chResult.channels : [])
       setChannelsSha(chResult.sha)
       setChannelsModified(false)
 
       const vpnResult = await githubService.fetchVpnConfigs()
-      setVpnConfigs(vpnResult.configs)
+      setVpnConfigs(Array.isArray(vpnResult.configs) ? vpnResult.configs : [])
       setVpnSha(vpnResult.sha)
       setVpnModified(false)
     } catch (err) {
@@ -74,12 +73,83 @@ function App() {
     }
   }
 
+  const parseWireguard = (text) => {
+    const lines = text.split('\n')
+    const result = {
+      interface: {},
+      peer: {},
+      version: 1,
+      last_updated: new Date().toISOString().split('T')[0]
+    }
+
+    let currentSection = null
+    let peerName = 'Unnamed VPN'
+
+    lines.forEach(line => {
+      const cleanLine = line.trim()
+      if (!cleanLine) return
+
+      // Extract Name from comment inside [Peer] section or just before it
+      if (cleanLine.startsWith('#')) {
+        const comment = cleanLine.substring(1).trim()
+        if (comment && !comment.includes('Key for') && !comment.includes('Bouncing') && !comment.includes('NAT-PMP') && !comment.includes('VPN Accelerator')) {
+          peerName = comment
+        }
+        return
+      }
+
+      if (cleanLine.toLowerCase() === '[interface]') {
+        currentSection = 'interface'
+        return
+      }
+      if (cleanLine.toLowerCase() === '[peer]') {
+        currentSection = 'peer'
+        result.peer.name = peerName
+        return
+      }
+
+      const [key, ...valueParts] = cleanLine.split('=')
+      if (!key || valueParts.length === 0) return
+
+      const k = key.trim().toLowerCase().replace(/\s+/g, '_')
+      const v = valueParts.join('=').trim()
+
+      if (currentSection === 'interface') {
+        if (k === 'privatekey') result.interface.private_key = v
+        else if (k === 'address') result.interface.address = v
+        else if (k === 'dns') result.interface.dns = v
+      } else if (currentSection === 'peer') {
+        if (k === 'publickey') result.peer.public_key = v
+        else if (k === 'allowedips') result.peer.allowed_ips = v
+        else if (k === 'endpoint') result.peer.endpoint = v
+        else if (k === 'persistentkeepalive') result.peer.persistent_keepalive = parseInt(v)
+      }
+    })
+
+    return result
+  }
+
+  const generateRawFromStructured = (structured) => {
+    if (!structured || !structured.interface) return ''
+    return `[Interface]
+PrivateKey = ${structured.interface.private_key || ''}
+Address = ${structured.interface.address || ''}
+DNS = ${structured.interface.dns || ''}
+
+[Peer]
+# ${structured.peer?.name || 'VPN Config'}
+PublicKey = ${structured.peer?.public_key || ''}
+AllowedIPs = ${structured.peer?.allowed_ips || ''}
+Endpoint = ${structured.peer?.endpoint || ''}
+PersistentKeepalive = ${structured.peer?.persistent_keepalive || 25}`
+  }
+
   const handleOpenAdd = () => {
     setEditingItem(null)
     if (activeTab === 'channels') {
       setChannelFormData({ name: '', streamUrl: '', Backupurl: '' })
     } else {
-      setVpnFormData({ name: '', config: '' })
+      setVpnFormData({ rawConfig: '' })
     }
     setIsModalOpen(true)
   }
@@ -94,8 +164,7 @@ function App() {
       })
     } else {
       setVpnFormData({
-        name: item.name,
-        config: item.config
+        rawConfig: generateRawFromStructured(item)
       })
     }
     setIsModalOpen(true)
@@ -113,13 +182,19 @@ function App() {
       }
       setChannelsModified(true)
     } else {
-      if (editingItem) {
-        setVpnConfigs(vpnConfigs.map(v => v.id === editingItem.id ? { ...v, ...vpnFormData } : v))
-      } else {
-        const nextId = (Math.max(0, ...vpnConfigs.map(v => parseInt(v.id))) + 1).toString()
-        setVpnConfigs([...vpnConfigs, { id: nextId, ...vpnFormData }])
+      try {
+        const structured = parseWireguard(vpnFormData.rawConfig)
+        if (editingItem) {
+          setVpnConfigs(vpnConfigs.map(v => v.id === editingItem.id ? { ...structured, id: editingItem.id } : v))
+        } else {
+          const nextId = (Math.max(0, ...vpnConfigs.map(v => parseInt(v.id || 0))) + 1).toString()
+          setVpnConfigs([...vpnConfigs, { ...structured, id: nextId }])
+        }
+        setVpnModified(true)
+      } catch (err) {
+        alert('Failed to parse WireGuard configuration. Please check the format.')
+        return
       }
-      setVpnModified(true)
     }
 
     setIsModalOpen(false)
@@ -154,9 +229,10 @@ function App() {
     }
   }
 
-  const filteredItems = (activeTab === 'channels' ? channels : vpnConfigs).filter(item =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  const filteredItems = (activeTab === 'channels' ? channels : vpnConfigs).filter(item => {
+    const name = activeTab === 'channels' ? item.name : (item.peer?.name || 'Unnamed')
+    return name.toLowerCase().includes(searchQuery.toLowerCase())
+  })
 
   const isCurrentTabModified = activeTab === 'channels' ? channelsModified : vpnModified
 
@@ -267,9 +343,9 @@ function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ fontSize: '0.8rem', color: 'var(--primary)', fontWeight: '700', letterSpacing: '2px' }}>ID: {item.id}</span>
                     </div>
-                    <h3 className="card-title">{item.name}</h3>
+                    <h3 className="card-title">{activeTab === 'channels' ? item.name : (item.peer?.name || 'Unnamed')}</h3>
                     <div className="card-subtitle">
-                      {activeTab === 'channels' ? item.streamUrl : 'WireGuard Configuration'}
+                      {activeTab === 'channels' ? item.streamUrl : (item.peer?.endpoint || 'No Endpoint')}
                     </div>
 
                     <div className="card-actions">
@@ -335,34 +411,28 @@ function App() {
                 ) : (
                   <>
                     <div className="form-group">
-                      <label className="form-label">Configuration Name</label>
-                      <input
-                        className="form-input"
-                        required
-                        value={vpnFormData.name}
-                        onChange={e => setVpnFormData({ ...vpnFormData, name: e.target.value })}
-                        placeholder="e.g. SG-FREE#3"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">WireGuard Configuration</label>
+                      <label className="form-label">WireGuard Configuration (Paste completely)</label>
                       <textarea
                         className="form-input"
                         required
-                        rows={12}
+                        rows={15}
                         style={{ fontFamily: 'monospace', fontSize: '0.9rem', resize: 'vertical' }}
-                        value={vpnFormData.config}
-                        onChange={e => setVpnFormData({ ...vpnFormData, config: e.target.value })}
+                        value={vpnFormData.rawConfig}
+                        onChange={e => setVpnFormData({ ...vpnFormData, rawConfig: e.target.value })}
                         placeholder="[Interface]
 PrivateKey = ...
 Address = ...
 DNS = ...
 
 [Peer]
+# SG-FREE#3
 PublicKey = ...
 AllowedIPs = ...
 Endpoint = ..."
                       />
+                    </div>
+                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                      Tip: Include a comment line starting with # below [Peer] to set the name.
                     </div>
                   </>
                 )}
